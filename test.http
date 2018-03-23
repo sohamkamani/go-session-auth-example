@@ -1,0 +1,11 @@
+POST http://localhost:8000/signin
+
+{"username":"user2","password":"password2"}
+
+####
+
+GET http://localhost:8000/welcome
+
+###
+
+POST http://localhost:8000/refresh
