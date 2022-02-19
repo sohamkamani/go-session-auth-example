@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/satori/go.uuid"
+	"github.com/google/uuid"
 )
 
 var users = map[string]string{
@@ -14,7 +14,18 @@ var users = map[string]string{
 	"user2": "password2",
 }
 
-// Create a struct that models the structure of a user, both in the request body, and in the DB
+var sessions = map[string]session{}
+
+type session struct {
+	username string
+	expiry   time.Time
+}
+
+func (s session) isExpired() bool {
+	return s.expiry.Before(time.Now())
+}
+
+// Create a struct that models the structure of a user in the request body
 type Credentials struct {
 	Password string `json:"password"`
 	Username string `json:"username"`
@@ -42,22 +53,21 @@ func Signin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create a new random session token
-	sessionToken := uuid.NewV4().String()
-	// Set the token in the cache, along with the user whom it represents
-	// The token has an expiry time of 120 seconds
-	_, err = cache.Do("SETEX", sessionToken, "120", creds.Username)
-	if err != nil {
-		// If there is an error in setting the cache, return an internal server error
-		w.WriteHeader(http.StatusInternalServerError)
-		return
+	sessionToken := uuid.NewString()
+	expiresAt := time.Now().Add(120 * time.Second)
+
+	// Set the token in the session map, along with the user whom it represents
+	sessions[sessionToken] = session{
+		username: creds.Username,
+		expiry:   expiresAt,
 	}
 
 	// Finally, we set the client cookie for "session_token" as the session token we just generated
-	// we also set an expiry time of 120 seconds, the same as the cache
+	// we also set an expiry time of 120 seconds
 	http.SetCookie(w, &http.Cookie{
 		Name:    "session_token",
 		Value:   sessionToken,
-		Expires: time.Now().Add(120 * time.Second),
+		Expires: expiresAt,
 	})
 }
 
@@ -76,60 +86,63 @@ func Welcome(w http.ResponseWriter, r *http.Request) {
 	}
 	sessionToken := c.Value
 
-	// We then get the name of the user from our cache, where we set the session token
-	response, err := cache.Do("GET", sessionToken)
-	if err != nil {
-		// If there is an error fetching from cache, return an internal server error status
-		w.WriteHeader(http.StatusInternalServerError)
+	// We then get the name of the user from our session map, where we set the session token
+	userSession, exists := sessions[sessionToken]
+	if !exists {
+		// If the session token is not present in session map, return an unauthorized error
+		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	if response == nil {
-		// If the session token is not present in cache, return an unauthorized error
+	if userSession.isExpired() {
+		delete(sessions, sessionToken)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 	// Finally, return the welcome message to the user
-	w.Write([]byte(fmt.Sprintf("Welcome %s!", response)))
+	w.Write([]byte(fmt.Sprintf("Welcome %s!", userSession.username)))
 }
 
 func Refresh(w http.ResponseWriter, r *http.Request) {
 	c, err := r.Cookie("session_token")
 	if err != nil {
 		if err == http.ErrNoCookie {
+			// If the cookie is not set, return an unauthorized status
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		// For any other type of error, return a bad request status
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	sessionToken := c.Value
 
-	response, err := cache.Do("GET", sessionToken)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
+	// We then get the name of the user from our session map, where we set the session token
+	userSession, exists := sessions[sessionToken]
+	if !exists {
+		// If the session token is not present in session map, return an unauthorized error
+		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	if response == nil {
+	if userSession.isExpired() {
+		delete(sessions, sessionToken)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 	// The code uptil this point is the same as the first part of the `Welcome` route
 
 	// Now, create a new session token for the current user
-	newSessionToken := uuid.NewV4().String()
-	_, err = cache.Do("SETEX", newSessionToken, "120", fmt.Sprintf("%s",response))
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return
+	newSessionToken := uuid.NewString()
+	expiresAt := time.Now().Add(120 * time.Second)
+
+	// Set the token in the session map, along with the user whom it represents
+	sessions[newSessionToken] = session{
+		username: userSession.username,
+		expiry:   expiresAt,
 	}
 
 	// Delete the older session token
-	_, err = cache.Do("DEL", sessionToken)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	
+	delete(sessions, sessionToken)
+
 	// Set the new token as the users `session_token` cookie
 	http.SetCookie(w, &http.Cookie{
 		Name:    "session_token",
