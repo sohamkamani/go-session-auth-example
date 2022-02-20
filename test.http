@@ -1,11 +1,15 @@
-POST http://localhost:8000/signin
+POST http://localhost:8080/signin
 
 {"username":"user2","password":"password2"}
 
 ####
 
-GET http://localhost:8000/welcome
+GET http://localhost:8080/welcome
 
 ###
 
-POST http://localhost:8000/refresh
+POST http://localhost:8080/refresh
+
+###
+
+GET http://localhost:8080/logout
